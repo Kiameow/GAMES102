@@ -67,3 +67,15 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Python (神经网络 I/O 阶段使用)
+python/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Visual Studio / IDE
+.vs/
+.idea/
+*.user
+*.suo

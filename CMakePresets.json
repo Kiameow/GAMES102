@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "msvc2022",
+      "displayName": "Visual Studio 2022 (x64)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/msvc2022",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_PREFIX}",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release"
+      }
+    },
+    {
+      "name": "msvc2022-v142",
+      "displayName": "Visual Studio 2022 (x64, v142 toolset)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "toolset": "v142",
+      "binaryDir": "${sourceDir}/build/msvc2022-v142",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_PREFIX}",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release"
+      }
+    },
+    {
+      "name": "msvc2019",
+      "displayName": "Visual Studio 2019 (x64)",
+      "generator": "Visual Studio 16 2019",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/msvc2019",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_PREFIX}",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "msvc2022-debug",   "configurePreset": "msvc2022", "configuration": "Debug" },
+    { "name": "msvc2022-release", "configurePreset": "msvc2022", "configuration": "Release" },
+    { "name": "msvc2022-v142-debug",   "configurePreset": "msvc2022-v142", "configuration": "Debug" },
+    { "name": "msvc2022-v142-release", "configurePreset": "msvc2022-v142", "configuration": "Release" },
+    { "name": "msvc2019-debug",   "configurePreset": "msvc2019", "configuration": "Debug" },
+    { "name": "msvc2019-release", "configurePreset": "msvc2019", "configuration": "Release" }
+  ]
+}
