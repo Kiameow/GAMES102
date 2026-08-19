@@ -117,6 +117,20 @@ QString PlotWidget::layerName(const QString& key) const {
     return QString();
 }
 
+// 把外部（如 Python）算好的采样点直接写入某层并显示
+void PlotWidget::setExternalCurve(const QString& key, std::vector<curve::Point> samples) {
+    for (CurveLayer& l : m_layers) {
+        if (l.key == key) {
+            l.samples.clear();
+            for (const auto& s : samples) l.samples << QPointF(s.x, s.y);
+            l.external = true;
+            l.visible = true;  // 回填成功即显示
+            update();
+            return;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 数据点 / 曲线重算
 // ---------------------------------------------------------------------------
@@ -138,8 +152,21 @@ void PlotWidget::setLambda(double lambda) {
 
 void PlotWidget::clearPoints() {
     m_points.clear();
+    clearExternalResults();
     rebuildCurve();
     emit pointsChanged(0);
+}
+
+void PlotWidget::clearExternalResults() {
+    bool changed = false;
+    for (CurveLayer& l : m_layers) {
+        if (l.external) {
+            l.samples.clear();
+            l.external = false;
+            changed = true;
+        }
+    }
+    if (changed) update();
 }
 
 void PlotWidget::rebuildCurve() {
@@ -147,10 +174,11 @@ void PlotWidget::rebuildCurve() {
     pts.reserve(m_points.size());
     for (const QPointF& p : m_points) pts.push_back({p.x(), p.y()});
 
-    // 逐个可见层调用算法，得到采样点
+    // 逐个可见层调用算法，得到采样点；外部结果层不重算
     for (CurveLayer& l : m_layers) {
+        if (l.external) continue;  // 结果由外部回填（如 Python），数据变化时由 clearExternalResults 作废
         l.samples.clear();
-        if (!l.visible || pts.size() < 2) continue;
+        if (!l.visible || pts.size() < 2 || !l.compute) continue;
         const auto samples = l.compute(pts, kCurveSamples);
         for (const auto& s : samples) l.samples << QPointF(s.x, s.y);
     }
@@ -162,6 +190,7 @@ void PlotWidget::mousePressEvent(QMouseEvent* event) {
         // 与已有红点距离过近时忽略，避免堆叠
         if (nearestPointIndex(event->pos(), kMinAddDistancePx) < 0) {
             m_points.append(widgetToData(event->pos()));
+            clearExternalResults();  // 数据变了，外部结果作废
             rebuildCurve();
             emit pointsChanged(m_points.size());
         }
@@ -169,6 +198,7 @@ void PlotWidget::mousePressEvent(QMouseEvent* event) {
         const int idx = nearestPointIndex(event->pos(), kRemoveDistancePx);
         if (idx >= 0) {
             m_points.removeAt(idx);
+            clearExternalResults();
             rebuildCurve();
             emit pointsChanged(m_points.size());
         }

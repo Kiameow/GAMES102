@@ -25,8 +25,9 @@ struct CurveLayer {
     QString name;   // 显示名（按钮、图例）
     QColor color;   // 曲线颜色
     bool visible = false;
-    CurveCompute compute;   // 数学算法入口
+    CurveCompute compute;   // 数学算法入口（外部结果层可以为空）
     QPolygonF samples;      // 最近一次计算的采样点（数据坐标系，paintEvent 里绘制）
+    bool external = false;  // 结果来自外部（如 Python 训练），rebuildCurve 不重算它
 };
 
 // 绘图画布：
@@ -50,6 +51,9 @@ public:
     int pointCount() const { return m_points.size(); }
     void clearPoints();
     const QVector<QPointF>& points() const { return m_points; }
+
+    // ---- 外部结果回填（如 Python 训练结果；数据点变化时自动作废） ----
+    void setExternalCurve(const QString& key, std::vector<curve::Point> samples);
 
     // ---- 最小二乘次数（逼近类算法通过 approximationDegree() 读取） ----
     int approximationDegree() const { return m_degree; }
@@ -77,6 +81,7 @@ private:
     QPolygonF toWidgetCoords(const QPolygonF& data) const;
     int nearestPointIndex(const QPointF& widgetPos, double maxDistPx) const;
     void rebuildCurve();
+    void clearExternalResults();  // 数据点变化时作废全部外部结果
 
     QVector<QPointF> m_points;
     std::vector<CurveLayer> m_layers;  // 已注册的算法层

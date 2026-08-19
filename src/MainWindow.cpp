@@ -2,12 +2,19 @@
 
 #include "math/CurveMath.h"
 
+#include <QCoreApplication>
+#include <QDir>
 #include <QDoubleSpinBox>
+#include <QFile>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QTimer>
 #include <QVBoxLayout>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -36,6 +43,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_spinLambda->setValue(0.1);
     m_spinLambda->setToolTip(QStringLiteral("岭回归正则系数 λ（越大系数越被压向 0、曲线越平滑；0 即普通最小二乘）"));
 
+    m_spinCenters = new QSpinBox(this);
+    m_spinCenters->setRange(1, 100);
+    m_spinCenters->setValue(6);
+    m_spinCenters->setToolTip(QStringLiteral("RBF 网络隐层（高斯中心）个数"));
+
+    m_spinEpochs = new QSpinBox(this);
+    m_spinEpochs->setRange(100, 100000);
+    m_spinEpochs->setSingleStep(100);
+    m_spinEpochs->setValue(2000);
+    m_spinEpochs->setToolTip(QStringLiteral("RBF 网络训练轮数"));
+
     auto* btnShowAll = new QPushButton(QStringLiteral("显示所有"), this);
     auto* btnHideAll = new QPushButton(QStringLiteral("隐藏全部"), this);
 
@@ -54,6 +72,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     lambdaRow->addWidget(new QLabel(QStringLiteral("岭回归λ:"), this));
     lambdaRow->addWidget(m_spinLambda, 1);
 
+    auto* centersRow = new QHBoxLayout;
+    centersRow->addWidget(new QLabel(QStringLiteral("RBF隐层数:"), this));
+    centersRow->addWidget(m_spinCenters, 1);
+
+    auto* epochsRow = new QHBoxLayout;
+    epochsRow->addWidget(new QLabel(QStringLiteral("训练轮数:"), this));
+    epochsRow->addWidget(m_spinEpochs, 1);
+
     auto* info = new QLabel(
         QStringLiteral("左键：添加红点\n右键：删除最近的红点\n\n"
                        "勾选按钮可叠加显示多条曲线，\n"
@@ -68,6 +94,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     controls->addLayout(degreeRow);
     controls->addLayout(sigmaRow);
     controls->addLayout(lambdaRow);
+    controls->addLayout(centersRow);
+    controls->addLayout(epochsRow);
 
     // ---- 注册算法（以后新增算法只需在这里加一行 addAlgorithm）----
     // 曲线颜色参考（高区分度备选色板，避免相邻算法撞色）：
@@ -112,6 +140,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                  },
                  controls);
 
+    // ---- RBF 神经网络：结果由 Python 异步回填（见 onRbfToggled / startRbfTraining）----
+    {
+        CurveLayer rbf;
+        rbf.key = QStringLiteral("rbf");
+        rbf.name = QStringLiteral("拟合-RBF神经网络");
+        rbf.color = QColor(0x8c, 0x56, 0x4b);  // 棕
+        m_plot->registerLayer(rbf);
+    }
+    m_btnRbf = new QPushButton(QStringLiteral("拟合-RBF神经网络(Python)"), this);
+    m_btnRbf->setCheckable(true);
+    controls->addWidget(m_btnRbf);
+
     auto* allRow = new QHBoxLayout;
     allRow->addWidget(btnShowAll);
     allRow->addWidget(btnHideAll);
@@ -123,7 +163,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     auto* panel = new QWidget(this);
     panel->setLayout(controls);
-    panel->setFixedWidth(280);
+    panel->setFixedWidth(300);
 
     auto* layout = new QHBoxLayout;
     layout->addWidget(m_plot, 1);
@@ -143,6 +183,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             &MainWindow::onSigmaChanged);
     connect(m_spinLambda, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             &MainWindow::onLambdaChanged);
+    connect(m_btnRbf, &QPushButton::toggled, this, &MainWindow::onRbfToggled);
+
+    // 训练中每 200ms 轮询一次 output.json，实时刷新 RBF 曲线
+    m_rbfTimer = new QTimer(this);
+    m_rbfTimer->setInterval(200);
+    connect(m_rbfTimer, &QTimer::timeout, this, &MainWindow::onRbfPoll);
 
     onPointsChanged(0);
 }
@@ -184,12 +230,16 @@ void MainWindow::onHideAllClicked() {
 void MainWindow::onClearClicked() {
     m_plot->clearPoints();
     for (QPushButton* btn : m_algorithmButtons) btn->setChecked(false);
+    m_btnRbf->setChecked(false);
     statusBar()->showMessage(QStringLiteral("已清除所有点"), 2000);
 }
 
 void MainWindow::onPointsChanged(int count) {
     statusBar()->showMessage(
         QStringLiteral("当前 %1 个数据点（至少 2 个点才能显示曲线）").arg(count), 3000);
+    // 数据变化会作废 Python 的 RBF 结果，自动取消勾选，避免"勾着却没曲线"
+    if (m_btnRbf && m_btnRbf->isChecked() && !m_plot->isLayerVisible(QStringLiteral("rbf")))
+        m_btnRbf->setChecked(false);
 }
 
 void MainWindow::onDegreeChanged(int degree) {
@@ -211,4 +261,148 @@ void MainWindow::onLambdaChanged(double lambda) {
     if (m_plot->isLayerVisible(QStringLiteral("ridge"))) {
         statusBar()->showMessage(QStringLiteral("岭回归λ已调整为 %1").arg(lambda), 2000);
     }
+}
+
+// ---------------------------------------------------------------------------
+// RBF 神经网络：C++ <-> Python 调用链（QProcess + JSON）
+// ---------------------------------------------------------------------------
+
+QString MainWindow::findProjectRoot() const {
+    QDir dir(QCoreApplication::applicationDirPath());
+    while (!dir.exists(QStringLiteral("CMakeLists.txt"))) {
+        if (!dir.cdUp()) return QDir::currentPath();
+    }
+    return dir.absolutePath();
+}
+
+void MainWindow::onRbfToggled(bool on) {
+    if (!on) {
+        m_plot->setLayerVisible(QStringLiteral("rbf"), false);
+        return;
+    }
+    if (m_plot->pointCount() < 2) {
+        statusBar()->showMessage(QStringLiteral("至少需要 2 个数据点"), 3000);
+        m_btnRbf->setChecked(false);
+        return;
+    }
+    startRbfTraining();
+}
+
+void MainWindow::startRbfTraining() {
+    const QString root = findProjectRoot();
+    const QString ioDir = root + QStringLiteral("/build/io");
+    QDir().mkpath(ioDir);
+
+    // 1) 导出当前红点为 input.json
+    QJsonObject params;
+    params[QStringLiteral("n_centers")] = m_spinCenters->value();
+    params[QStringLiteral("epochs")] = m_spinEpochs->value();
+    params[QStringLiteral("samples")] = 240;
+    params[QStringLiteral("report_interval")] = 100;  // 每 100 轮更新一次中间结果
+    QJsonArray pts;
+    for (const QPointF& p : m_plot->points()) {
+        QJsonArray pt;
+        pt.append(p.x());
+        pt.append(p.y());
+        pts.append(pt);
+    }
+    QJsonObject req;
+    req[QStringLiteral("task")] = QStringLiteral("fit_rbf");
+    req[QStringLiteral("points")] = pts;
+    req[QStringLiteral("params")] = params;
+
+    QFile inFile(ioDir + QStringLiteral("/input.json"));
+    if (!inFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        statusBar()->showMessage(QStringLiteral("无法写入 %1").arg(inFile.fileName()), 5000);
+        m_btnRbf->setChecked(false);
+        return;
+    }
+    inFile.write(QJsonDocument(req).toJson(QJsonDocument::Indented));
+    inFile.close();
+
+    // 2) 异步启动 python：uv run --project python python/infer.py input output
+    if (m_rbfProcess) m_rbfProcess->deleteLater();
+    m_rbfProcess = new QProcess(this);
+    connect(m_rbfProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            &MainWindow::onRbfFinished);
+    connect(m_rbfProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
+        m_rbfTimer->stop();
+        m_btnRbf->setEnabled(true);
+        m_btnRbf->setChecked(false);
+        statusBar()->showMessage(QStringLiteral("无法启动 Python（uv 是否在 PATH 中？）"), 6000);
+    });
+    m_btnRbf->setEnabled(false);
+    statusBar()->showMessage(QStringLiteral("RBF 神经网络训练中…"), 0);
+    m_rbfProcess->setWorkingDirectory(root);
+    m_rbfProcess->start(QStringLiteral("uv"),
+                        {QStringLiteral("run"), QStringLiteral("--project"),
+                         QStringLiteral("python"), QStringLiteral("python/src/infer.py"),
+                         QStringLiteral("build/io/input.json"),
+                         QStringLiteral("build/io/output.json")});
+    m_rbfTimer->start();  // 开始轮询：epoch=0 的随机初始化曲线很快就会出现
+}
+
+bool MainWindow::readRbfOutput(QJsonObject& obj) const {
+    QFile outFile(findProjectRoot() + QStringLiteral("/build/io/output.json"));
+    if (!outFile.open(QIODevice::ReadOnly)) return false;
+    const QJsonDocument doc = QJsonDocument::fromJson(outFile.readAll());
+    if (doc.isNull() || !doc.isObject()) return false;
+    obj = doc.object();
+    return true;
+}
+
+// 训练中定时轮询：读 output.json 的中间进度（done=false），实时刷新曲线
+void MainWindow::onRbfPoll() {
+    if (!m_rbfProcess || m_rbfProcess->state() != QProcess::Running) return;
+    QJsonObject obj;
+    if (!readRbfOutput(obj)) return;
+    if (!obj.value(QStringLiteral("ok")).toBool(false)) return;  // 出错留给 finished 处理
+    if (obj.value(QStringLiteral("done")).toBool(false)) return;
+
+    std::vector<curve::Point> samples;
+    const QJsonArray arr = obj.value(QStringLiteral("curve")).toArray();
+    for (const QJsonValue& v : arr) {
+        const QJsonArray pt = v.toArray();
+        samples.push_back({pt.at(0).toDouble(), pt.at(1).toDouble()});
+    }
+    m_plot->setExternalCurve(QStringLiteral("rbf"), samples);
+    statusBar()->showMessage(
+        QStringLiteral("RBF 训练中：%1").arg(obj.value(QStringLiteral("msg")).toString()), 1500);
+}
+
+void MainWindow::onRbfFinished(int exitCode, QProcess::ExitStatus) {
+    m_btnRbf->setEnabled(true);
+    m_rbfTimer->stop();
+    QJsonObject obj;
+    if (exitCode == 0 && readRbfOutput(obj)) {
+        if (obj.value(QStringLiteral("ok")).toBool(false)) {
+            std::vector<curve::Point> samples;
+            const QJsonArray arr = obj.value(QStringLiteral("curve")).toArray();
+            for (const QJsonValue& v : arr) {
+                const QJsonArray pt = v.toArray();
+                samples.push_back({pt.at(0).toDouble(), pt.at(1).toDouble()});
+            }
+            m_plot->setExternalCurve(QStringLiteral("rbf"), samples);
+            m_btnRbf->setChecked(true);  // 训练中数据变化可能取消过勾选，这里恢复
+            statusBar()->showMessage(
+                QStringLiteral("RBF 完成：%1").arg(obj.value(QStringLiteral("msg")).toString()),
+                8000);
+            return;
+        }
+        statusBar()->showMessage(
+            QStringLiteral("RBF 失败：%1").arg(obj.value(QStringLiteral("msg")).toString()), 8000);
+    } else {
+        // 优先显示 Python 写回的干净错误（output.json 的 msg），否则回退到 stderr
+        QString detail;
+        QJsonObject errObj;
+        if (readRbfOutput(errObj) && !errObj.value(QStringLiteral("ok")).toBool(false))
+            detail = errObj.value(QStringLiteral("msg")).toString();
+        if (detail.isEmpty() && m_rbfProcess)
+            detail = QString::fromLocal8Bit(m_rbfProcess->readAllStandardError());
+        statusBar()->showMessage(QStringLiteral("RBF 调用失败 (exit=%1)：%2")
+                                     .arg(exitCode)
+                                     .arg(detail.left(300)),
+                                 8000);
+    }
+    m_btnRbf->setChecked(false);
 }

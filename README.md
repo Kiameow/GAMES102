@@ -102,7 +102,7 @@ GAMES102/
 │   └── run.ps1             # 一键运行
 ├── src/
 │   ├── main.cpp
-│   ├── MainWindow.h/.cpp   # 主窗口 + 按钮面板
+│   ├── MainWindow.h/.cpp   # 主窗口 + 按钮面板（含 RBF 的 QProcess 调用链）
 │   ├── PlotWidget.h/.cpp   # 画布：左键加点、右键删点、绘制曲线
 │   └── math/
 │       ├── CurveMath.h/.cpp  # 数学库（Lagrange 纯 C++ + 最小二乘 Eigen），与 Qt 解耦
@@ -110,7 +110,7 @@ GAMES102/
 │   └── curve_math_test.cpp   # 数学库自测（无 Qt 依赖，控制台程序）
 ├── third_party/
 │   └── eigen/                # Eigen 3.4.0 头文件（随仓库分发，无需安装）
-└── python/                 # （规划中）神经网络 I/O，见 python/README.md
+└── python/                 # uv 环境 + RBF 脚本（pyproject.toml / .venv / src/infer.py）
 ```
 
 ## 扩展新曲线算法
@@ -175,7 +175,11 @@ cmake --build build\msvc2022 --config Debug --target curve_math_test
 
 输出 `ALL TESTS PASSED` 即通过。
 
-## Python / 神经网络 I/O 规划
+## Python / RBF 神经网络（作业2）
 
-后续作业需要调用 Python（PyTorch 等）做神经网络的输入输出，规划见
-[`python/README.md`](python/README.md)（目前只有方案，没有代码）。
+C++ 通过 QProcess 调用 `uv run --project python python/src/infer.py`：
+红点 → `build/io/input.json` → Python 训练 RBF 网络 → `build/io/output.json`
+→ 曲线回填到画布（棕色「拟合-RBF神经网络」按钮，隐层数/训练轮数可调）。
+**训练过程实时预览**：epoch=0（随机权重）起每 100 轮更新一次曲线，Qt 每
+200ms 轮询 `output.json` 刷新，可看到函数从随机逐步拟合到数据点的全过程。
+环境配置与手动测试见 [`python/README.md`](python/README.md)。
