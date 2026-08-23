@@ -58,6 +58,9 @@ compile_commands.json
 *.bak
 *.swp
 
+# Screenshots (report materials)
+screenshots/
+
 # vcpkg
 vcpkg_installed/
 

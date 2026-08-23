@@ -3,6 +3,10 @@
 #include "math/CurveMath.h"
 
 #include <QCoreApplication>
+#include <QApplication>
+#include <QClipboard>
+#include <QComboBox>
+#include <QDateTime>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -11,6 +15,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -36,6 +41,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_spinSigma->setValue(0.3);
     m_spinSigma->setToolTip(QStringLiteral("高斯基函数的宽度 σ（越小曲线越局部）"));
 
+    m_spinGaussCenters = new QSpinBox(this);
+    m_spinGaussCenters->setRange(1, 100);
+    m_spinGaussCenters->setValue(5);
+    m_spinGaussCenters->setToolTip(QStringLiteral("Gauss 基最小二乘拟合的高斯中心个数（k-means 撒点）"));
+
     m_spinLambda = new QDoubleSpinBox(this);
     m_spinLambda->setRange(0.0, 5.0);
     m_spinLambda->setDecimals(2);
@@ -54,11 +64,37 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     m_spinEpochs->setValue(2000);
     m_spinEpochs->setToolTip(QStringLiteral("RBF 网络训练轮数"));
 
+    m_comboParamBasis = new QComboBox(this);
+    m_comboParamBasis->addItem(QStringLiteral("幂基(多项式)"),
+                               static_cast<int>(ParametricBasis::Power));
+    m_comboParamBasis->addItem(QStringLiteral("Gauss基(k-means)"),
+                               static_cast<int>(ParametricBasis::Gauss));
+    m_comboParamBasis->setCurrentIndex(0);
+    m_comboParamBasis->setToolTip(QStringLiteral("参数曲线拟合的基函数：幂基（用\"逼近次数\"）或 "
+                                                 "Gauss基（用\"高斯σ\"和\"高斯中心数\"）"));
+
+    m_comboVertexMode = new QComboBox(this);
+    m_comboVertexMode->addItem(QStringLiteral("平滑顶点"),
+                               static_cast<int>(curve::VertexTangent::Mode::Smooth));
+    m_comboVertexMode->addItem(QStringLiteral("直线顶点"),
+                               static_cast<int>(curve::VertexTangent::Mode::Straight));
+    m_comboVertexMode->addItem(QStringLiteral("角部顶点"),
+                               static_cast<int>(curve::VertexTangent::Mode::Corner));
+    m_comboVertexMode->addItem(QStringLiteral("自由(C²)"),
+                               static_cast<int>(curve::VertexTangent::Mode::Free));
+    m_comboVertexMode->setCurrentIndex(0);
+    m_comboVertexMode->setToolTip(QStringLiteral("右键选中的节点的控制模式：\n"
+                                                "平滑=共享切线(C¹)，直线=共线切线(G¹)，"
+                                                "角部=左右独立(G⁰)，自由=恢复C²"));
+
     auto* btnShowAll = new QPushButton(QStringLiteral("显示所有"), this);
     auto* btnHideAll = new QPushButton(QStringLiteral("隐藏全部"), this);
 
     auto* btnClear = new QPushButton(QStringLiteral("清除所有点"), this);
     btnClear->setStyleSheet(QStringLiteral("color:#c0392b;"));
+
+    auto* btnRemoveLast = new QPushButton(QStringLiteral("删除最近点"), this);
+    btnRemoveLast->setToolTip(QStringLiteral("删除最近放置的一个数据点（替代原右键删除）"));
 
     auto* degreeRow = new QHBoxLayout;
     degreeRow->addWidget(new QLabel(QStringLiteral("逼近次数:"), this));
@@ -68,20 +104,34 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     sigmaRow->addWidget(new QLabel(QStringLiteral("高斯σ:"), this));
     sigmaRow->addWidget(m_spinSigma, 1);
 
+    auto* gaussCentersRow = new QHBoxLayout;
+    gaussCentersRow->addWidget(new QLabel(QStringLiteral("高斯中心数:"), this));
+    gaussCentersRow->addWidget(m_spinGaussCenters, 1);
+
     auto* lambdaRow = new QHBoxLayout;
     lambdaRow->addWidget(new QLabel(QStringLiteral("岭回归λ:"), this));
     lambdaRow->addWidget(m_spinLambda, 1);
 
     auto* centersRow = new QHBoxLayout;
-    centersRow->addWidget(new QLabel(QStringLiteral("RBF隐层数:"), this));
+    centersRow->addWidget(new QLabel(QStringLiteral("RBF单隐层神经元数:"), this));
     centersRow->addWidget(m_spinCenters, 1);
 
     auto* epochsRow = new QHBoxLayout;
     epochsRow->addWidget(new QLabel(QStringLiteral("训练轮数:"), this));
     epochsRow->addWidget(m_spinEpochs, 1);
 
+    auto* basisRow = new QHBoxLayout;
+    basisRow->addWidget(new QLabel(QStringLiteral("参数拟合基:"), this));
+    basisRow->addWidget(m_comboParamBasis, 1);
+
+    auto* vertexModeRow = new QHBoxLayout;
+    vertexModeRow->addWidget(new QLabel(QStringLiteral("顶点模式:"), this));
+    vertexModeRow->addWidget(m_comboVertexMode, 1);
+
     auto* info = new QLabel(
-        QStringLiteral("左键：添加红点\n右键：删除最近的红点\n\n"
+        QStringLiteral("左键：添加红点\n左键长按：拖动型值点\n右键：选中节点并出现切线柄\n"
+                       "拖切线柄端点：调整切线（平滑/直线/角部）\n"
+                       "「删除最近点」：删除刚放置的点\n\n"
                        "勾选按钮可叠加显示多条曲线，\n"
                        "「显示所有」一次全开，不同颜色\n区分不同算法。"),
         this);
@@ -93,9 +143,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     controls->addSpacing(8);
     controls->addLayout(degreeRow);
     controls->addLayout(sigmaRow);
+    controls->addLayout(gaussCentersRow);
     controls->addLayout(lambdaRow);
     controls->addLayout(centersRow);
     controls->addLayout(epochsRow);
+    controls->addLayout(basisRow);
+    controls->addLayout(vertexModeRow);
 
     // ---- 注册算法（以后新增算法只需在这里加一行 addAlgorithm）----
     // 曲线颜色参考（高区分度备选色板，避免相邻算法撞色）：
@@ -124,6 +177,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                  },
                  controls);
 
+    addAlgorithm(QStringLiteral("gauss_ls"), QStringLiteral("逼近-Gauss基最小二乘"),
+                 QColor(0x55, 0x6b, 0x2f),  // 深橄榄绿（与亮绿 #2ca02c 区分）
+                 [this](const std::vector<curve::Point>& pts, int samples) {
+                     return curve::gaussLeastSquares(pts, m_plot->gaussianSigma(),
+                                                     m_plot->gaussCenters(), samples);
+                 },
+                 controls);
+
     addAlgorithm(QStringLiteral("least_squares"), QStringLiteral("逼近-幂函数最小二乘"),
                  QColor(0x2c, 0xa0, 0x2c),
                  [this](const std::vector<curve::Point>& pts, int samples) {
@@ -137,6 +198,74 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                  [this](const std::vector<curve::Point>& pts, int samples) {
                      return curve::ridgeRegression(pts, m_plot->approximationDegree(),
                                                    m_plot->lambda(), samples);
+                 },
+                 controls);
+
+    // 作业3：单参数曲线拟合。点列 → 参数化 tᵢ → (t,x) (t,y) 分别拟合 → 合成曲线。
+    // 基函数由"参数拟合基"下拉框决定（幂基最小二乘 / Gauss基最小二乘），
+    // 4 个按钮共用同一选择，方便对比参数化方法与基函数两个维度。
+    addAlgorithm(QStringLiteral("param_uniform"), QStringLiteral("参数曲线-均匀参数化"),
+                 QColor(0xe3, 0x77, 0xc2),  // 粉（色板第 7 色）
+                 [this](const std::vector<curve::Point>& pts, int samples) {
+                     return fitParametricSelected(pts, curve::parameterizeUniform(pts), samples);
+                 },
+                 controls);
+
+    addAlgorithm(QStringLiteral("param_chord"), QStringLiteral("参数曲线-弦长参数化"),
+                 QColor(0x7f, 0x7f, 0x7f),  // 灰（色板第 8 色）
+                 [this](const std::vector<curve::Point>& pts, int samples) {
+                     return fitParametricSelected(pts, curve::parameterizeChordal(pts),
+                                                      samples);
+                 },
+                 controls);
+
+    addAlgorithm(QStringLiteral("param_centripetal"), QStringLiteral("参数曲线-中心参数化"),
+                 QColor(0xb8, 0x86, 0x0b),  // 暗金（色板之外的补充色，与已有颜色区分）
+                 [this](const std::vector<curve::Point>& pts, int samples) {
+                     return fitParametricSelected(pts, curve::parameterizeCentripetal(pts),
+                                                      samples);
+                 },
+                 controls);
+
+    addAlgorithm(QStringLiteral("param_foley"), QStringLiteral("参数曲线-Foley参数化"),
+                 QColor(0x8e, 0x44, 0xad),  // 深紫（与 gauss 的紫区分）
+                 [this](const std::vector<curve::Point>& pts, int samples) {
+                     return fitParametricSelected(pts, curve::parameterizeFoley(pts),
+                                                      samples);
+                 },
+                 controls);
+
+    // 参数型三次样条（弦长参数化）：对 (t,x)、(t,y) 分别做三次样条再合成二维曲线，
+    // 过全部点、C² 连续，且 x 无需单调；支持右键选点后编辑切线（见"顶点模式"）。
+    // 自然边界（M₀=Mₙ=0）与夹持边界（端点斜率差分估算）各一个按钮，方便对比。
+    addAlgorithm(QStringLiteral("spline_natural"), QStringLiteral("插值-三次样条(自然)"),
+                 QColor(0x16, 0xa0, 0x85),  // 绿松石（区别于已有的亮绿/青/橄榄）
+                 [this](const std::vector<curve::Point>& pts, int samples) {
+                     return curve::fitParametricSpline(pts, curve::CubicSplineType::Natural,
+                                                       samples, m_plot->tangentControls());
+                 },
+                 controls);
+
+    addAlgorithm(QStringLiteral("spline_clamped"), QStringLiteral("插值-三次样条(夹持)"),
+                 QColor(0xd3, 0x54, 0x00),  // 焦橙（区别于橙 #ff7f0e）
+                 [this](const std::vector<curve::Point>& pts, int samples) {
+                     return curve::fitParametricSpline(pts, curve::CubicSplineType::Clamped,
+                                                       samples, m_plot->tangentControls());
+                 },
+                 controls);
+
+    // 分段三次 Bezier（Catmull-Rom 构造中间控制点）：每段 [P_i, P_{i+1}] 一条三次
+    // Bezier，中间两个控制点由 Catmull-Rom 切线推出（B1 = P_i + (P_{i+1}−P_{i−1})/6，
+    // B2 = P_{i+1} − (P_{i+2}−P_i)/6；边界段用端点镜像虚拟点补齐邻居，仅 2 个点时
+    // 直接退化为直线段）。曲线过全部型值点，且在型值点处切线连续（C¹）。
+    // 控制点（靛蓝方块）由 PlotWidget 全局管理，可左键拖动（拖过即覆盖，不再随
+    // Catmull-Rom 重算），所以这里把 m_plot 里的段控制点直接传给数学层。
+    addAlgorithm(QStringLiteral("bezier_catmull_rom"),
+                 QStringLiteral("插值-分段Bezier(Catmull-Rom)"),
+                 QColor(0x4b, 0x00, 0x82),  // 靛蓝（补充色，与已有蓝/紫系区分）
+                 [this](const std::vector<curve::Point>& pts, int samples) {
+                     return curve::bezierCatmullRomInterpolate(pts, m_plot->bezierSegments(),
+                                                               samples);
                  },
                  controls);
 
@@ -157,6 +286,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     allRow->addWidget(btnHideAll);
     controls->addLayout(allRow);
     controls->addWidget(btnClear);
+    controls->addWidget(btnRemoveLast);
+    controls->addSpacing(4);
+
+    m_btnScreenshot = new QPushButton(QStringLiteral("保存截图(PNG)"), this);
+    m_btnScreenshot->setToolTip(QStringLiteral("把当前窗口内容（含控件与参数数值）保存为 PNG\n"
+                                               "到项目根目录 screenshots 文件夹，便于写报告引用"));
+    controls->addWidget(m_btnScreenshot);
+
     controls->addSpacing(12);
     controls->addWidget(info);
     controls->addStretch(1);
@@ -181,9 +318,18 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             &MainWindow::onDegreeChanged);
     connect(m_spinSigma, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             &MainWindow::onSigmaChanged);
+    connect(m_spinGaussCenters, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            &MainWindow::onGaussCentersChanged);
+    connect(m_comboParamBasis, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &MainWindow::onParamBasisChanged);
+    connect(m_comboVertexMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            &MainWindow::onVertexModeChanged);
+    connect(m_plot, &PlotWidget::nodeSelected, this, &MainWindow::onNodeSelected);
+    connect(btnRemoveLast, &QPushButton::clicked, m_plot, &PlotWidget::removeLastPoint);
     connect(m_spinLambda, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
             &MainWindow::onLambdaChanged);
     connect(m_btnRbf, &QPushButton::toggled, this, &MainWindow::onRbfToggled);
+    connect(m_btnScreenshot, &QPushButton::clicked, this, &MainWindow::onCaptureScreenshot);
 
     // 训练中每 200ms 轮询一次 output.json，实时刷新 RBF 曲线
     m_rbfTimer = new QTimer(this);
@@ -254,6 +400,58 @@ void MainWindow::onSigmaChanged(double sigma) {
     if (m_plot->isLayerVisible(QStringLiteral("gauss"))) {
         statusBar()->showMessage(QStringLiteral("高斯σ已调整为 %1").arg(sigma), 2000);
     }
+}
+
+void MainWindow::onGaussCentersChanged(int centers) {
+    m_plot->setGaussCenters(centers);
+    if (m_plot->isLayerVisible(QStringLiteral("gauss_ls"))) {
+        statusBar()->showMessage(QStringLiteral("高斯中心数已调整为 %1").arg(centers), 2000);
+    }
+}
+
+void MainWindow::onParamBasisChanged(int index) {
+    const auto basis = static_cast<ParametricBasis>(
+        m_comboParamBasis->itemData(index).toInt());
+    m_plot->setParametricBasis(basis);
+    statusBar()->showMessage(
+        basis == ParametricBasis::Gauss
+            ? QStringLiteral("参数拟合基函数：Gauss基（σ + 高斯中心数）")
+            : QStringLiteral("参数拟合基函数：幂基（逼近次数）"),
+        3000);
+}
+
+void MainWindow::onVertexModeChanged(int index) {
+    const auto mode = static_cast<curve::VertexTangent::Mode>(
+        m_comboVertexMode->itemData(index).toInt());
+    m_plot->setSelectedVertexMode(mode);
+    const QString name = m_comboVertexMode->currentText();
+    if (m_plot->selectedIndex() >= 0)
+        statusBar()->showMessage(QStringLiteral("顶点模式：%1").arg(name), 2000);
+}
+
+void MainWindow::onNodeSelected(int index) {
+    if (index < 0) {
+        statusBar()->showMessage(QStringLiteral("已取消选中节点"), 2000);
+        return;
+    }
+    // 同步下拉框显示当前节点的模式（避免信号回环）
+    const auto mode = m_plot->selectedVertexMode();
+    const int idx = m_comboVertexMode->findData(static_cast<int>(mode));
+    if (idx >= 0) {
+        m_comboVertexMode->blockSignals(true);
+        m_comboVertexMode->setCurrentIndex(idx);
+        m_comboVertexMode->blockSignals(false);
+    }
+    statusBar()->showMessage(QStringLiteral("已选中节点 %1，拖动切线柄调整").arg(index), 3000);
+}
+
+std::vector<curve::Point> MainWindow::fitParametricSelected(
+    const std::vector<curve::Point>& pts, const std::vector<double>& t, int samples) {
+    if (m_plot->parametricBasis() == ParametricBasis::Gauss) {
+        return curve::fitParametricCurveGauss(pts, t, m_plot->gaussianSigma(),
+                                              m_plot->gaussCenters(), samples);
+    }
+    return curve::fitParametricCurve(pts, t, m_plot->approximationDegree(), samples);
 }
 
 void MainWindow::onLambdaChanged(double lambda) {
@@ -405,4 +603,35 @@ void MainWindow::onRbfFinished(int exitCode, QProcess::ExitStatus) {
                                  8000);
     }
     m_btnRbf->setChecked(false);
+}
+
+// ---------------------------------------------------------------------------
+// 截图：离屏渲染整个主窗口（含控件与参数数值），保存 PNG 到 项目根/screenshots
+// ---------------------------------------------------------------------------
+void MainWindow::onCaptureScreenshot() {
+    const QPixmap shot = grab();  // 离屏渲染，不受窗口被遮挡影响
+    if (shot.isNull()) {
+        statusBar()->showMessage(QStringLiteral("截图失败：无法渲染窗口内容"), 5000);
+        return;
+    }
+
+    const QString dir = findProjectRoot() + QStringLiteral("/screenshots");
+    if (!QDir().mkpath(dir)) {
+        statusBar()->showMessage(QStringLiteral("截图失败：无法创建目录 %1").arg(dir), 5000);
+        return;
+    }
+
+    const QString stamp =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd_HHmmss"));
+    const QString file = dir + QStringLiteral("/GAMES102_%1.png").arg(stamp);
+    if (!shot.save(file, "PNG")) {
+        statusBar()->showMessage(QStringLiteral("截图失败：无法写入 %1").arg(file), 5000);
+        return;
+    }
+
+    QApplication::clipboard()->setText(QDir::toNativeSeparators(file));
+    statusBar()->showMessage(
+        QStringLiteral("已保存截图：%1 （路径已复制到剪贴板）")
+            .arg(QDir::toNativeSeparators(file)),
+        8000);
 }
