@@ -269,6 +269,34 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                  },
                  controls);
 
+    // Chaikin 细分（割角法，逼近型）：每轮每个老点被抛弃，相邻点平均出两个
+    // "割角点"落在每条边上（ν′_{2i}=1/4ν_{i−1}+3/4ν_i、ν′_{2i+1}=3/4ν_i+1/4ν_{i+1}），
+    // 开放曲线保留首尾端点；迭代 4 轮后直接把最终多边形画成逼近曲线
+    //（不显示中间细分点）。
+    addAlgorithm(QStringLiteral("chaikin"), QStringLiteral("逼近-Chaikin细分(逼近型)"),
+                 QColor(0x22, 0x8b, 0x22),  // 森林绿（补充色，与已有的亮绿/橄榄/绿松石区分）
+                 [](const std::vector<curve::Point>& pts, int /*samples*/) {
+                     return curve::chaikinSubdivisionCurve(pts, 4);
+                 },
+                 controls);
+
+    // 均匀三次 B 样条细分（逼近型）：每轮内部顶点做 1/8:3/4:1/8 平滑、每条边插
+    // 1/2:1/2 中点（ν′_{2i}=1/8ν_{i−1}+3/4ν_i+1/8ν_{i+1}、ν′_{2i+1}=1/2ν_i+1/2ν_{i+1}），
+    // 老点抛弃、保留首尾端点；与 Chaikin 共用细分迭代骨架，迭代 4 轮后直接画曲线。
+    addAlgorithm(QStringLiteral("bspline_subdiv"), QStringLiteral("逼近-均匀三次B样条细分"),
+                 QColor(0x00, 0x8b, 0x8b),  // 暗青（区别于亮青 #17becf / 绿松石 #16a085）
+                 [](const std::vector<curve::Point>& pts, int /*samples*/) {
+                     return curve::bsplineSubdivisionCurve(pts, 4);
+                 },
+                 controls);
+
+    addAlgorithm(QStringLiteral("fourpoint_subdiv"), QStringLiteral("插值-四点细分"),
+        QColor(0x50, 0x8b, 0x8b),  
+        [](const std::vector<curve::Point>& pts, int /*samples*/) {
+            return curve::fourPointSubdivisionCurve(pts, 4);
+        },
+        controls);
+
     // ---- RBF 神经网络：结果由 Python 异步回填（见 onRbfToggled / startRbfTraining）----
     {
         CurveLayer rbf;

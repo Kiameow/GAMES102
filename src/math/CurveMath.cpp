@@ -11,6 +11,23 @@ namespace curve {
 
 namespace {
 constexpr double kEps = 1e-12;
+
+// 单轮细分函数指针（Chaikin / B 样条共用同一细分迭代骨架）
+using SubdivideStepFn = std::vector<Point> (*)(const std::vector<Point>&);
+
+// 通用细分迭代：对 pts 迭代 iterations 轮，每轮用 step 生成新点列，
+// 返回最终多边形（直接作为逼近曲线）。退化输入（<2 点）返回空。
+std::vector<Point> subdivideIterate(const std::vector<Point>& pts, int iterations,
+                                    SubdivideStepFn step) {
+    if (pts.size() < 2) return {};
+    std::vector<Point> cur = pts;
+    iterations = std::clamp(iterations, 0, 10);
+    for (int k = 0; k < iterations; ++k) {
+        cur = step(cur);
+        if (cur.size() < 3) break;  // 只剩直线段，再细分无意义（n==2 时每轮原样返回）
+    }
+    return cur;
+}
 }
 
 double L2(const Point& p1, const Point& p2)
@@ -1018,5 +1035,143 @@ std::vector<Point> bezierCatmullRomInterpolate(const std::vector<Point>& pts,
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Chaikin 细分（割角法，逼近型）
+// ---------------------------------------------------------------------------
+
+// 单轮细分：每条边 (a, b) 生成两个割角点 3/4·a + 1/4·b 与 1/4·a + 3/4·b，
+// 老点全部抛弃；开放曲线保留首尾端点（端点不割角）。
+std::vector<Point> chaikinSubdivideOnce(const std::vector<Point>& pts)
+{
+    std::vector<Point> out;
+    const int n = static_cast<int>(pts.size());
+    if (n < 2) return out;
+    if (n == 2) return pts;  // 两个点本身就是直线段，无需割角
+
+    out.reserve(static_cast<std::size_t>(2 * n));
+    out.push_back(pts.front());  // 保留起点
+    for (int i = 0; i + 1 < n; ++i) {
+        const Point& a = pts[i];
+        const Point& b = pts[i + 1];
+        out.push_back({0.75 * a.x + 0.25 * b.x, 0.75 * a.y + 0.25 * b.y});  // ν′_{2i+1}
+        out.push_back({0.25 * a.x + 0.75 * b.x, 0.25 * a.y + 0.75 * b.y});  // ν′_{2i+2}
+    }
+    out.push_back(pts.back());  // 保留终点
+    return out;
+}
+
+// 细分曲线：对 pts 迭代 iterations 轮，把最终多边形直接作为逼近曲线返回。
+//（迭代骨架复用 subdivideIterate，与均匀三次 B 样条细分共用。）
+std::vector<Point> chaikinSubdivisionCurve(const std::vector<Point>& pts, int iterations)
+{
+    return subdivideIterate(pts, iterations, &chaikinSubdivideOnce);
+}
+
+// ---------------------------------------------------------------------------
+// 均匀三次 B 样条细分（逼近型）
+// ---------------------------------------------------------------------------
+
+// 单轮细分：内部顶点平滑 ν′_{2i} = 1/8·ν_{i−1} + 3/4·ν_i + 1/8·ν_{i+1}，
+// 每条边插中点 ν′_{2i+1} = 1/2·ν_i + 1/2·ν_{i+1}；老点抛弃，首尾端点保留（钳制端）。
+std::vector<Point> bsplineSubdivideOnce(const std::vector<Point>& pts)
+{
+    std::vector<Point> out;
+    const int n = static_cast<int>(pts.size());
+    if (n < 2) return out;
+    if (n == 2) return pts;  // 两个点本身就是直线段，无需细分
+
+    out.reserve(static_cast<std::size_t>(2 * n - 1));
+    out.push_back(pts.front());  // 保留起点 ν′₀ = ν₀
+    for (int i = 0; i + 1 < n; ++i) {
+        const Point& a = pts[i];
+        const Point& b = pts[i + 1];
+        // 边 (a, b) 的中点 ν′_{2i+1}
+        out.push_back({0.5 * a.x + 0.5 * b.x, 0.5 * a.y + 0.5 * b.y});
+        // 若 b 是内部顶点（非最后一个），做 1/8:3/4:1/8 平滑 ν′_{2i+2}
+        if (i + 1 < n - 1) {
+            const Point& c = pts[i + 2];
+            out.push_back({0.125 * a.x + 0.75 * b.x + 0.125 * c.x,
+                           0.125 * a.y + 0.75 * b.y + 0.125 * c.y});
+        }
+    }
+    out.push_back(pts.back());  // 保留终点 ν′_{2n−1} = ν_{n−1}
+    return out;
+}
+
+// 细分曲线：迭代骨架与 Chaikin 完全共用（subdivideIterate），只换单轮规则。
+std::vector<Point> bsplineSubdivisionCurve(const std::vector<Point>& pts, int iterations)
+{
+    return subdivideIterate(pts, iterations, &bsplineSubdivideOnce);
+}
+
+std::vector<Point> fourPointSubdivideOnce(const std::vector<Point>& pts)
+{
+    std::vector<Point> out;
+    const int n = static_cast<int>(pts.size());
+    if (n < 2) return out;
+
+    // 2个点：直接返回（或可改为插入中点，但这里按你的逻辑返回原样）
+    if (n == 2) return pts;
+
+    out.reserve(static_cast<std::size_t>(2 * n - 1));
+
+    // 保留第一个旧点
+    out.push_back(pts[0]);
+
+    for (int i = 0; i + 1 < n; ++i)
+    {
+        // 获取4个点：v_{i-1}, v_i, v_{i+1}, v_{i+2}
+        // 使用镜像点处理边界
+
+        Point v_im1;  // v_{i-1}
+        if (i == 0)
+        {
+            // 镜像：v_{-1} = 2*v_0 - v_1
+            v_im1.x = 2.0 * pts[0].x - pts[1].x;
+            v_im1.y = 2.0 * pts[0].y - pts[1].y;
+        }
+        else
+        {
+            v_im1 = pts[i - 1];
+        }
+
+        const Point& v_i = pts[i];
+        const Point& v_ip1 = pts[i + 1];
+
+        Point v_ip2;  // v_{i+2}
+        if (i + 2 >= n)
+        {
+            // 镜像：v_{n} = 2*v_{n-1} - v_{n-2}
+            v_ip2.x = 2.0 * pts[n - 1].x - pts[n - 2].x;
+            v_ip2.y = 2.0 * pts[n - 1].y - pts[n - 2].y;
+        }
+        else
+        {
+            v_ip2 = pts[i + 2];
+        }
+
+        // 4点插值公式计算新插入的点
+        // v'_{2i+1} = 9/16*(v_i + v_{i+1}) - 1/16*(v_{i-1} + v_{i+2})
+        Point newPoint;
+        newPoint.x = (9.0 / 16.0) * (v_i.x + v_ip1.x) - (1.0 / 16.0) * (v_im1.x + v_ip2.x);
+        newPoint.y = (9.0 / 16.0) * (v_i.y + v_ip1.y) - (1.0 / 16.0) * (v_im1.y + v_ip2.y);
+
+        out.push_back(newPoint);  // 插入新点
+
+        // 保留旧点 v_{i+1}
+        out.push_back(v_ip1);
+    }
+
+    // 注意：由于循环中每次都会push_back(v_ip1)，最后一个旧点已经被保留
+    // 所以不需要再额外push_back(pts.back())
+    // 但如果n==2，已经在前面返回了
+
+    return out;  // 长度为 2n-1
+}
+
+std::vector<Point> fourPointSubdivisionCurve(const std::vector<Point>& pts, int iterations)
+{
+    return subdivideIterate(pts, iterations, &fourPointSubdivideOnce);
+}
 
 }  // namespace curve

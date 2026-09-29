@@ -380,6 +380,125 @@ int main() {
         CHECK(curve::bezierCatmullRomInterpolate(pts, bad, 20).size() == 40);
     }
 
+    // ---------- 18) Chaikin 细分（割角法，逼近型）----------
+    {
+        // 单轮公式验证：直角拐角 (0,0)→(1,0)→(1,1)，割角后拐角点 (1,0) 应消失
+        const std::vector<curve::Point> corner = {{0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}};
+        const auto once = curve::chaikinSubdivideOnce(corner);
+        CHECK(once.size() == 6);  // 3 点 → 保留两端 + 2×2 割角点 = 6
+        // 首尾端点保留
+        CHECK(std::abs(once.front().x - 0.0) < 1e-12 && std::abs(once.front().y - 0.0) < 1e-12);
+        CHECK(std::abs(once.back().x - 1.0) < 1e-12 && std::abs(once.back().y - 1.0) < 1e-12);
+        // 割角点按 3/4:1/4 落在边上
+        CHECK(std::abs(once[1].x - 0.75) < 1e-12 && std::abs(once[1].y - 0.0) < 1e-12);
+        CHECK(std::abs(once[2].x - 0.25) < 1e-12 && std::abs(once[2].y - 0.0) < 1e-12);
+        CHECK(std::abs(once[3].x - 1.0) < 1e-12 && std::abs(once[3].y - 0.25) < 1e-12);
+        CHECK(std::abs(once[4].x - 1.0) < 1e-12 && std::abs(once[4].y - 0.75) < 1e-12);
+        // 老点 (1,0) 被抛弃
+        bool hasCorner = false;
+        for (const auto& p : once)
+            if (std::abs(p.x - 1.0) < 1e-9 && std::abs(p.y - 0.0) < 1e-9) hasCorner = true;
+        CHECK(!hasCorner);
+
+        // 共线点细分后仍严格共线
+        const std::vector<curve::Point> line = {{0.0, 2.0}, {1.0, 2.0}, {2.0, 2.0}, {3.0, 2.0}};
+        const auto lc = curve::chaikinSubdivisionCurve(line, 4);
+        CHECK(lc.size() > line.size());
+        for (const auto& p : lc) CHECK(std::abs(p.y - 2.0) < 1e-12);
+
+        // 迭代越多点越密，且端点始终保留
+        const auto c2 = curve::chaikinSubdivisionCurve(corner, 2);
+        const auto c4 = curve::chaikinSubdivisionCurve(corner, 4);
+        CHECK(c2.size() < c4.size());
+        CHECK(std::abs(c4.front().x - 0.0) < 1e-12 && std::abs(c4.front().y - 0.0) < 1e-12);
+        CHECK(std::abs(c4.back().x - 1.0) < 1e-12 && std::abs(c4.back().y - 1.0) < 1e-12);
+
+        // 退化输入：<2 个点返回空；2 个点就是直线段，原样返回
+        CHECK(curve::chaikinSubdivisionCurve({}).empty());
+        CHECK(curve::chaikinSubdivisionCurve({{0.5, 0.5}}).empty());
+        const std::vector<curve::Point> two = {{0.0, 0.0}, {1.0, 1.0}};
+        const auto t = curve::chaikinSubdivisionCurve(two, 4);
+        CHECK(t.size() == 2);
+        CHECK(std::abs(t[1].x - 1.0) < 1e-12 && std::abs(t[1].y - 1.0) < 1e-12);
+    }
+
+    // ---------- 19) 均匀三次 B 样条细分（逼近型，与 Chaikin 共用细分迭代骨架）----------
+    {
+        // 单轮公式验证：3 点 (0,0)→(1,1)→(2,0)，输出 2n−1 = 5 点
+        const std::vector<curve::Point> tri = {{0.0, 0.0}, {1.0, 1.0}, {2.0, 0.0}};
+        const auto once = curve::bsplineSubdivideOnce(tri);
+        CHECK(once.size() == 5);
+        CHECK(std::abs(once[0].x - 0.0) < 1e-12 && std::abs(once[0].y - 0.0) < 1e-12);  // 保留起点
+        CHECK(std::abs(once[1].x - 0.5) < 1e-12 && std::abs(once[1].y - 0.5) < 1e-12);  // 边中点
+        CHECK(std::abs(once[2].x - 1.0) < 1e-12 && std::abs(once[2].y - 0.75) < 1e-12); // 1/8:3/4:1/8 平滑
+        CHECK(std::abs(once[3].x - 1.5) < 1e-12 && std::abs(once[3].y - 0.5) < 1e-12);  // 边中点
+        CHECK(std::abs(once[4].x - 2.0) < 1e-12 && std::abs(once[4].y - 0.0) < 1e-12);  // 保留终点
+
+        // 共线点细分后仍严格共线
+        const std::vector<curve::Point> line = {{0.0, 2.0}, {1.0, 2.0}, {2.0, 2.0}, {3.0, 2.0}};
+        const auto lc = curve::bsplineSubdivisionCurve(line, 4);
+        CHECK(lc.size() > line.size());
+        for (const auto& p : lc) CHECK(std::abs(p.y - 2.0) < 1e-12);
+
+        // 迭代越多点越密（3→5→9→17→33），端点始终保留
+        const auto c2 = curve::bsplineSubdivisionCurve(tri, 2);
+        const auto c4 = curve::bsplineSubdivisionCurve(tri, 4);
+        CHECK(c2.size() == 9);
+        CHECK(c4.size() == 33);
+        CHECK(std::abs(c4.front().x - 0.0) < 1e-12 && std::abs(c4.front().y - 0.0) < 1e-12);
+        CHECK(std::abs(c4.back().x - 2.0) < 1e-12 && std::abs(c4.back().y - 0.0) < 1e-12);
+
+        // 退化输入：<2 个点返回空；2 个点就是直线段，原样返回
+        CHECK(curve::bsplineSubdivisionCurve({}).empty());
+        CHECK(curve::bsplineSubdivisionCurve({{0.5, 0.5}}).empty());
+        const std::vector<curve::Point> two2 = {{0.0, 0.0}, {1.0, 1.0}};
+        const auto t2 = curve::bsplineSubdivisionCurve(two2, 4);
+        CHECK(t2.size() == 2);
+        CHECK(std::abs(t2[1].x - 1.0) < 1e-12 && std::abs(t2[1].y - 1.0) < 1e-12);
+    }
+
+    // ---------- 20) 4 点插值细分（插值型，w=1/16；旧点保留 + 每边中点插一个新点）----------
+    {
+        // 3 个点：两条边都是边界边，各用一个镜像虚拟点补齐模板
+        //   ν₋₁ = 2ν₀−ν₁ = (−1,−1)，ν₃ = 2ν₂−ν₁ = (3,−1)
+        //   边(ν₀,ν₁) 中点新点 = 9/16(ν₀+ν₁) − 1/16(ν₋₁+ν₂) = (0.5, 0.625)
+        const std::vector<curve::Point> tri = {{0.0, 0.0}, {1.0, 1.0}, {2.0, 0.0}};
+        const auto once = curve::fourPointSubdivideOnce(tri);
+        CHECK(once.size() == 5);  // 2n−1
+        // 旧点全部保留（插值型特征）
+        CHECK(std::abs(once[0].x - 0.0) < 1e-12 && std::abs(once[0].y - 0.0) < 1e-12);
+        CHECK(std::abs(once[2].x - 1.0) < 1e-12 && std::abs(once[2].y - 1.0) < 1e-12);
+        CHECK(std::abs(once[4].x - 2.0) < 1e-12 && std::abs(once[4].y - 0.0) < 1e-12);
+        // 两个中点新点（含镜像虚拟点）
+        CHECK(std::abs(once[1].x - 0.5) < 1e-12 && std::abs(once[1].y - 0.625) < 1e-12);
+        CHECK(std::abs(once[3].x - 1.5) < 1e-12 && std::abs(once[3].y - 0.625) < 1e-12);
+
+        // 三次多项式还原（cubic reproduction）：4 点取自 y = x³，
+        // 内部边 (ν₁,ν₂) 的中点新点应精确等于 x=1.5 处的值 3.375
+        const std::vector<curve::Point> cubic = {
+            {0.0, 0.0}, {1.0, 1.0}, {2.0, 8.0}, {3.0, 27.0}};
+        const auto co = curve::fourPointSubdivideOnce(cubic);
+        CHECK(co.size() == 7);
+        CHECK(std::abs(co[3].x - 1.5) < 1e-12 && std::abs(co[3].y - 3.375) < 1e-12);
+
+        // 迭代后原始点仍在细分多边形中（插值型特征），端点始终保留
+        const auto c4 = curve::fourPointSubdivisionCurve(tri, 4);
+        CHECK(c4.size() == 33);  // 3 → 5 → 9 → 17 → 33
+        CHECK(std::abs(c4[0].x - 0.0) < 1e-12 && std::abs(c4[0].y - 0.0) < 1e-12);
+        CHECK(std::abs(c4[16].x - 1.0) < 1e-12 && std::abs(c4[16].y - 1.0) < 1e-12);  // 原始 ν₁ 仍在
+        CHECK(std::abs(c4[32].x - 2.0) < 1e-12 && std::abs(c4[32].y - 0.0) < 1e-12);
+
+        // 共线点细分后仍严格共线；退化输入安全
+        const std::vector<curve::Point> line = {{0.0, 2.0}, {1.0, 2.0}, {2.0, 2.0}, {3.0, 2.0}};
+        const auto lc = curve::fourPointSubdivisionCurve(line, 4);
+        for (const auto& p : lc) CHECK(std::abs(p.y - 2.0) < 1e-12);
+        CHECK(curve::fourPointSubdivisionCurve({}).empty());
+        CHECK(curve::fourPointSubdivisionCurve({{0.5, 0.5}}).empty());
+        const std::vector<curve::Point> two = {{0.0, 0.0}, {1.0, 1.0}};
+        const auto t = curve::fourPointSubdivisionCurve(two, 4);
+        CHECK(t.size() == 2);
+    }
+
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");
         return 0;

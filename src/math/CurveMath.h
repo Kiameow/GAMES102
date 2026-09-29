@@ -233,4 +233,60 @@ namespace curve
     std::vector<Point> bezierCatmullRomInterpolate(const std::vector<Point>& pts,
                                                    const std::vector<BezierSegment>& segs,
                                                    int perSegmentSamples = 80);
+
+    // ---------------------------------------------------------------------------
+    // Chaikin 细分（割角法，逼近型）
+    // 每一轮：每个老点被抛弃，相邻点平均出两个"割角点"落在每条边上——
+    //     ν′_{2i}   = 1/4·ν_{i−1} + 3/4·ν_i     （边 (ν_{i−1}, ν_i) 上靠近 ν_i 的割角点）
+    //     ν′_{2i+1} = 3/4·ν_i + 1/4·ν_{i+1}     （边 (ν_i, ν_{i+1}) 上靠近 ν_i 的割角点）
+    // 即每条边 (ν_i, ν_{i+1}) 生成两个点 3/4·ν_i + 1/4·ν_{i+1} 与 1/4·ν_i + 3/4·ν_{i+1}。
+    // 开放曲线保留首尾端点（端点不割角）；多轮迭代后逼近二次 B 样条曲线。
+    // ---------------------------------------------------------------------------
+
+    // 单轮细分：输入有序点列，输出割角后的新点列（长度 ≈ 2n，老点全部抛弃）。
+    // 少于 2 个点返回空；2 个点本身就是直线段，原样返回。
+    std::vector<Point> chaikinSubdivideOnce(const std::vector<Point>& pts);
+
+    // 细分曲线：对 pts 迭代 iterations 轮（默认 4 轮，点数约 ×16，足够画平滑曲线），
+    // 返回可直接绘制的逼近曲线点列；退化输入返回空。
+    std::vector<Point> chaikinSubdivisionCurve(const std::vector<Point>& pts,
+                                               int iterations = 4);
+
+    // ---------------------------------------------------------------------------
+    // 均匀三次 B 样条细分（逼近型）
+    // 每一轮（在均匀节点处插中点）：
+    //     ν′_{2i}   = 1/8·ν_{i−1} + 3/4·ν_i + 1/8·ν_{i+1}   （内部顶点 ν_i 的平滑）
+    //     ν′_{2i+1} = 1/2·ν_i + 1/2·ν_{i+1}                  （边 (ν_i, ν_{i+1}) 的中点）
+    // 老点被抛弃；开放曲线保留首尾端点（端点不参与平滑，即钳制端）。
+    // 极限曲线为均匀三次 B 样条。与 Chaikin 共用同一细分迭代骨架
+    //（chaikinSubdivisionCurve 与 bsplineSubdivisionCurve 只差单轮规则）。
+    // ---------------------------------------------------------------------------
+
+    // 单轮细分：输入有序点列，输出新点列（长度 2n−1，老点全部抛弃）。
+    // 少于 2 个点返回空；2 个点本身就是直线段，原样返回。
+    std::vector<Point> bsplineSubdivideOnce(const std::vector<Point>& pts);
+
+    // 细分曲线：对 pts 迭代 iterations 轮（默认 4 轮），返回可直接绘制的逼近曲线点列。
+    std::vector<Point> bsplineSubdivisionCurve(const std::vector<Point>& pts,
+                                               int iterations = 4);
+
+    // ---------------------------------------------------------------------------
+    // 4 点插值细分（插值型，Dyn–Levin–Gregory 1987，w = 1/16）
+    // 每轮旧点全部保留，只在每条边的中点插入一个新点：
+    //     ν′_{2i}   = νᵢ                                      （旧点保留，插值型）
+    //     ν′_{2i+1} = 9/16·(νᵢ + νᵢ₊₁) − 1/16·(νᵢ₋₁ + νᵢ₊₂)  （4 点模板）
+    // 新点 = 过 νᵢ₋₁, νᵢ, νᵢ₊₁, νᵢ₊₂ 的唯一三次多项式在区间中点处的值，
+    // 因此能精确还原三次多项式（cubic reproduction）；极限曲线 C¹ 且经过全部原始点。
+    // 边界处模板缺的点（ν₋₁ / νₙ）用镜像虚拟点补齐（与 catmullRomVirtualPoint 相同的
+    // 镜像外推：ν₋₁ = 2ν₀ − ν₁，νₙ = 2νₙ₋₁ − νₙ₋₂）；迭代骨架与 Chaikin / B 样条细分
+    // 共用 subdivideIterate。
+    // ---------------------------------------------------------------------------
+
+    // 单轮细分：输入有序点列，输出新点列（长度 2n−1，旧点全部保留）。
+    // 少于 2 个点返回空；2 个点本身就是直线段，原样返回。
+    std::vector<Point> fourPointSubdivideOnce(const std::vector<Point>& pts);
+
+    // 细分曲线：对 pts 迭代 iterations 轮（默认 4 轮），返回可直接绘制的逼近曲线点列。
+    std::vector<Point> fourPointSubdivisionCurve(const std::vector<Point>& pts,
+                                                 int iterations = 4);
 }  // namespace curve
