@@ -16,3 +16,4 @@ add_library(hw_common INTERFACE)
 target_link_libraries(hw_common INTERFACE easy3d::viewer easy3d::algo)
 
 add_subdirectory(hw8)
+add_subdirectory(test)

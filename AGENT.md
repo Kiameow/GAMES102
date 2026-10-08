@@ -160,6 +160,9 @@ m_gaussCenters / m_paramBasis`），配套 getter + setter；setter 内部调 `r
 | `spline_natural` | 插值-三次样条(自然) | 绿松石 #16a085 | `fitParametricSpline`(Natural) + 切线控制 |
 | `spline_clamped` | 插值-三次样条(夹持) | 焦橙 #d35400 | `fitParametricSpline`(Clamped) + 切线控制 |
 | `bezier_catmull_rom` | 插值-分段Bezier(Catmull-Rom) | 靛蓝 #4b0082 | `bezierCatmullRomInterpolate`（`buildBezierSegment` + `evaluateBezierSegment`） |
+| `chaikin` | 逼近-Chaikin细分(逼近型) | 森林绿 #228b22 | `chaikinSubdivisionCurve`（`chaikinSubdivideOnce` 迭代 4 轮） |
+| `bspline_subdiv` | 逼近-均匀三次B样条细分 | 暗青 #008b8b | `bsplineSubdivisionCurve`（`bsplineSubdivideOnce` 迭代 4 轮） |
+| `fourpoint_subdiv` | 插值-四点细分 | 灰青 #508b8b | `fourPointSubdivisionCurve`（`fourPointSubdivideOnce` 迭代 4 轮） |
 | `rbf`（外部） | 拟合-RBF神经网络(Python) | 棕 #8c564b | Python infer.py 异步回填 |
 
 参数型四种按钮共享「参数拟合基」下拉框（幂基/ Gauss基），四次样条按钮共享「顶点模式」。
@@ -181,6 +184,18 @@ m_gaussCenters / m_paramBasis`），配套 getter + setter；setter 内部调 `r
     勾选该层时显示靛蓝方块 + 虚线控制多边形，左键可直接拖动（拖过即 pinned，
     pts 变化后保留原位），曲线用 `bezierCatmullRomInterpolate(pts, segs, samples)`
     读取拖过的控制点。
+  - Chaikin 细分（`chaikinSubdivisionCurve`，逼近型）已接入 GUI：每轮每条边生成两个
+    割角点（3/4:1/4、1/4:3/4），老点全部抛弃，开放曲线保留首尾端点；默认迭代 4 轮，
+    直接把最终多边形画成逼近曲线，不显示中间细分点（极限为二次 B 样条）。
+  - 均匀三次 B 样条细分（`bsplineSubdivisionCurve`，逼近型）已接入 GUI：每轮内部顶点
+    1/8:3/4:1/8 平滑 + 每条边 1/2:1/2 中点（ν′_{2i}=1/8ν_{i−1}+3/4ν_i+1/8ν_{i+1}、
+    ν′_{2i+1}=1/2ν_i+1/2ν_{i+1}），老点抛弃、保留首尾端点（钳制端），极限为均匀三次
+    B 样条。与 Chaikin 共用细分迭代骨架 `subdivideIterate`（函数指针传入单轮规则）。
+  - 4 点插值细分（`fourPointSubdivisionCurve`，插值型，Dyn–Levin–Gregory w=1/16）已接入
+    GUI：每轮旧点全部保留、每条边中点插入一个新点（9/16:9/16:−1/16:−1/16 模板 = 过 4
+    个相邻点的三次多项式在中点的值），边界用镜像虚拟点补齐（n==3 时两条边都是边界边，
+    各用一个虚拟点）；极限 C¹ 且过全部原始点，能精确还原三次多项式。迭代骨架同样复用
+    `subdivideIterate`。
   - **增量构建坑**：改了 `.h` 后 MSBuild 偶尔不重编依赖它的 .cpp（obj 比源码新）。若链接报
     `unresolved external symbol`，先查 `build\msvc2026-v142\<Target>.dir\Debug\*.obj` 时间戳，
     删掉对应 obj 或 touch 源码强制重编译。
